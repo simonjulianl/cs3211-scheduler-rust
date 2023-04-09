@@ -5,7 +5,8 @@ use std::{
 
 use task::{Task, TaskType};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let (seed, starting_height, max_children) = get_args();
 
     eprintln!(
@@ -15,15 +16,23 @@ fn main() {
 
     let mut count_map = HashMap::new();
     let mut taskq = VecDeque::from(Task::generate_initial(seed, starting_height, max_children));
+    let mut handleq = VecDeque::new();
 
     let mut output: u64 = 0;
 
     let start = Instant::now();
-    while let Some(next) = taskq.pop_front() {
-        *count_map.entry(next.typ).or_insert(0usize) += 1;
-        let result = next.execute();
-        output ^= result.0;
-        taskq.extend(result.1.into_iter());
+    while taskq.len() > 0 {
+        while let Some(next) = taskq.pop_front() {
+            *count_map.entry(next.typ).or_insert(0usize) += 1;
+            let handle = tokio::spawn(async move {next.execute()});
+            handleq.push_back(handle);
+        }
+
+        while let Some(handle) = handleq.pop_front() {
+            let result = handle.await.unwrap();
+            output ^= result.0;
+            taskq.extend(result.1.into_iter());
+        }
     }
     let end = Instant::now();
 
