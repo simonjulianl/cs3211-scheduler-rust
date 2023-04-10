@@ -1,12 +1,15 @@
 use std::{
     collections::{HashMap, VecDeque},
     time::Instant,
+    sync::atomic::{AtomicU64, Ordering},
+    sync::{Mutex, Arc},
 };
 
 use task::{Task, TaskType};
+use threadpool::ThreadPool;
+use num_cpus;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let (seed, starting_height, max_children) = get_args();
 
     eprintln!(
@@ -14,24 +17,28 @@ async fn main() {
         seed, starting_height, max_children
     );
 
-    let mut count_map = HashMap::new();
-    let mut taskq = VecDeque::from(Task::generate_initial(seed, starting_height, max_children));
-    let mut handles = VecDeque::new();
+    let n_cpus = num_cpus::get();
+    let pool = ThreadPool::new(n_cpus);
 
-    let mut output: u64 = 0;
+    let mut count_map = HashMap::new();
+    let taskq = Arc::new(Mutex::new(VecDeque::from(Task::generate_initial(seed, starting_height, max_children))));
+
+    static OUTPUT: AtomicU64 = AtomicU64::new(0);
 
     let start = Instant::now();
-    while taskq.len() > 0 {
-        while let Some(next) = taskq.pop_front() {
+    while taskq.lock().unwrap().len() > 0 {
+        let mut tq = taskq.lock().unwrap();
+        while let Some(next) = tq.pop_front() {
+            let taskq = taskq.clone();
             *count_map.entry(next.typ).or_insert(0usize) += 1;
-            handles.push_back(tokio::spawn(async move {next.execute()}));
+            pool.execute(move || {
+                let result = next.execute();
+                OUTPUT.fetch_xor(result.0, Ordering::Relaxed);
+                taskq.lock().unwrap().extend(result.1.into_iter());
+            });
         }
-
-        while let Some(handle) = handles.pop_front() {
-            let result = handle.await.unwrap();
-            output ^= result.0;
-            taskq.extend(result.1.into_iter());
-        }
+        drop(tq); // if tq is not dropped, the mutex will be held by the main thread, preventing write from worker threads
+        pool.join();
     }
     let end = Instant::now();
 
@@ -39,7 +46,7 @@ async fn main() {
 
     println!(
         "{},{},{},{}",
-        output,
+        OUTPUT.load(Ordering::Relaxed),
         count_map.get(&TaskType::Hash).unwrap_or(&0),
         count_map.get(&TaskType::Derive).unwrap_or(&0),
         count_map.get(&TaskType::Random).unwrap_or(&0)

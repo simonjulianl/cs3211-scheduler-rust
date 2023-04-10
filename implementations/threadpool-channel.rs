@@ -1,12 +1,14 @@
 use std::{
     collections::{HashMap, VecDeque},
     time::Instant,
+    sync::mpsc::channel,
 };
 
 use task::{Task, TaskType};
+use threadpool::ThreadPool;
+use num_cpus;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let (seed, starting_height, max_children) = get_args();
 
     eprintln!(
@@ -14,21 +16,31 @@ async fn main() {
         seed, starting_height, max_children
     );
 
+    let n_cpus = num_cpus::get();
+    let pool = ThreadPool::new(n_cpus);
+
+    let (send, recv) = channel();
+
     let mut count_map = HashMap::new();
     let mut taskq = VecDeque::from(Task::generate_initial(seed, starting_height, max_children));
-    let mut handles = VecDeque::new();
 
     let mut output: u64 = 0;
+    let mut spawned: u64 = 0;
 
     let start = Instant::now();
     while taskq.len() > 0 {
         while let Some(next) = taskq.pop_front() {
+            let send = send.clone();
             *count_map.entry(next.typ).or_insert(0usize) += 1;
-            handles.push_back(tokio::spawn(async move {next.execute()}));
+            spawned += 1;
+            pool.execute(move || {
+                send.send(next.execute()).unwrap();
+            });
         }
 
-        while let Some(handle) = handles.pop_front() {
-            let result = handle.await.unwrap();
+        while spawned > 0 {
+            let result = recv.recv().unwrap();
+            spawned -= 1;
             output ^= result.0;
             taskq.extend(result.1.into_iter());
         }
