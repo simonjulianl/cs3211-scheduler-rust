@@ -28,7 +28,7 @@ fn main() {
     let mut spawned: u64 = 0;
 
     let start = Instant::now();
-    while taskq.len() > 0 {
+    while taskq.len() > 0 || spawned > 0 {
         while let Some(next) = taskq.pop_front() {
             let send = send.clone();
             *count_map.entry(next.typ).or_insert(0usize) += 1;
@@ -39,10 +39,14 @@ fn main() {
         }
 
         while spawned > 0 {
-            let result = recv.recv().unwrap();
-            spawned -= 1;
-            output ^= result.0;
-            taskq.extend(result.1.into_iter());
+            match recv.try_recv() {
+                Ok(result) => {
+                    spawned -= 1;
+                    output ^= result.0;
+                    taskq.extend(result.1.into_iter());
+                },
+                Err(_) => break,
+            };
         }
     }
     let end = Instant::now();
