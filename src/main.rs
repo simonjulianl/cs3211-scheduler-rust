@@ -2,71 +2,62 @@ use std::{
     collections::{HashMap, VecDeque},
     time::Instant,
     sync::mpsc::channel,
+    sync::mpsc::Sender,
+    sync::mpsc::Receiver,
 };
 
 use task::{Task, TaskType};
 use threadpool::ThreadPool;
 use num_cpus;
 
-// this would use 2563 MB in my local machine
+fn execute_task(send: &Sender<(u64, Vec<Task>)>, count_map: &mut HashMap<TaskType, usize>, spawned: &mut u64, pool: &ThreadPool, next: Task) {
+    let send = send.clone();
+    *count_map.entry(next.typ).or_insert(0usize) += 1;
+    *spawned += 1;
+    pool.execute(move || {
+        send.send(next.execute()).unwrap();
+    });
+}
+
+fn wait_task(recv: &Receiver<(u64, Vec<Task>)>, spawned: &mut u64, output: &mut u64) -> std::vec::IntoIter<Task> {
+    let result = recv.recv().unwrap();
+    *spawned -= 1;
+    *output ^= result.0;
+    result.1.into_iter()
+}
+
 fn main() {
     let (seed, starting_height, max_children) = get_args();
-    let n_cpus = num_cpus::get();
 
     eprintln!(
-        "Using seed {}, starting height {}, max. children {}, n cpus: {}",
-        seed, starting_height, max_children, n_cpus
+        "Using seed {}, starting height {}, max. children {}",
+        seed, starting_height, max_children
     );
 
+    let n_cpus = num_cpus::get();
+    let pool = ThreadPool::new(n_cpus);
+
+    let (send, recv) = channel();
+
     let mut count_map = HashMap::new();
-    let mut taskq = VecDeque::new();
-    let init_task = Task::generate_initial(seed, starting_height, max_children);
-    taskq.push_back(init_task);
-
-    let mut task_counter: u128 = 1;
-
-    let (send_ch, recv_ch) = channel();
-    let th_pool = ThreadPool::new(n_cpus);
+    let mut taskq = VecDeque::from(Task::generate_initial(seed, starting_height, max_children));
 
     let mut output: u64 = 0;
+    let mut spawned: u64 = 0;
 
     let start = Instant::now();
-    while task_counter > 0 {
-        /*
-         In every step do the following:
-         1. get the next task if any
-         2. If there is, send is to task pool
-         3. Attempt to recv any result
 
-         Repeat this until all the tasks are finished
-         */
-        if let Some(next) = taskq.pop_front() {
-            let typ = next.typ;
-            *count_map.entry(typ).or_insert(0usize) += 1;
-            let send_ch = send_ch.clone();
-            th_pool.execute(move || {
-                send_ch.send(next.execute())
-                    .expect("Please receive this task");
-            })
-        }
+    while let Some(next) = taskq.pop_front() {
+        execute_task(&send, &mut count_map, &mut spawned, &pool, next);
+    }
 
-        let task_result = recv_ch.try_recv();
-        if task_result.is_ok() {
-            let (result, child_task, sibling_task) = task_result.unwrap();
-            if sibling_task.is_some() {
-                taskq.push_front(sibling_task.unwrap());
-                task_counter += 1;
-            }
-
-            if child_task.is_some() {
-                taskq.push_front(child_task.unwrap());
-                task_counter += 1;
-            }
-
-            output ^= result;
-            task_counter -= 1;
+    while spawned > 0 {
+        let new_tasks = wait_task(&recv, &mut spawned, &mut output);
+        for next in new_tasks {
+            execute_task(&send, &mut count_map, &mut spawned, &pool, next);
         }
     }
+
     let end = Instant::now();
 
     eprintln!("Completed in {} s", (end - start).as_secs_f64());

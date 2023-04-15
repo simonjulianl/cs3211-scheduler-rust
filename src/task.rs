@@ -1,11 +1,7 @@
+// Do not modify this file.
 use rand::{Rng, RngCore, SeedableRng};
-use rand_chacha::ChaCha20Rng;
 
-pub type TaskResult = (
-    u64,
-    Option<Task>, // child
-    Option<Task> // sibling
-);
+pub type TaskResult = (u64, Vec<Task>);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TaskType {
@@ -22,23 +18,19 @@ pub struct Task {
     pub seed: u64,
     pub height: usize,
     pub max_children: usize,
-    pub current_sibling_idx: usize,
-    pub max_siblings: usize,
-    pub rng: ChaCha20Rng, // use the rng first before you are passing it
 }
 
-fn generate_set(seed: u64, height: usize, max_children: usize, max_num: usize) -> Task {
-    let mut rng = ChaCha20Rng::seed_from_u64(seed);
+fn generate_set(seed: u64, height: usize, max_children: usize, max_num: usize) -> Vec<Task> {
+    let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(seed);
     let num_tasks: usize = rng.gen_range(0..=max_num);
-    Task {
-        typ: TYPE_ARRAY[rng.gen_range(0..TYPE_ARRAY.len())],
-        seed: rng.gen(),
-        height,
-        max_children,
-        current_sibling_idx: 0,
-        max_siblings: num_tasks,
-        rng,
-    }
+    (0..num_tasks)
+        .map(|_| Task {
+            typ: TYPE_ARRAY[rng.gen_range(0..TYPE_ARRAY.len())],
+            seed: rng.gen(),
+            height,
+            max_children,
+        })
+        .collect()
 }
 
 impl Task {
@@ -48,52 +40,28 @@ impl Task {
             TaskType::Derive => do_derive(self),
             TaskType::Random => do_random(self),
         };
-        let (child_task, sibling_task) = self.get_next(output);
-        (output, child_task, sibling_task)
+        (
+            output,
+            if self.height == 0 {
+                Vec::new()
+            } else {
+                generate_set(
+                    self.seed ^ output,
+                    self.height - 1,
+                    self.max_children,
+                    self.max_children,
+                )
+            },
+        )
     }
 
-    fn get_next(&self, output: u64) -> (Option<Task>, Option<Task>) {
-        // println!("Height: {} current idx {} max {}", self.height, self.current_sibling_idx, self.max_siblings);
-        let task = if self.height <= 0 { None } else {
-            let seed = self.seed ^ output;
-            let mut rng = ChaCha20Rng::seed_from_u64(seed);
-            let num_tasks: usize = rng.gen_range(0..=self.max_children);
-            if num_tasks > 0 {
-                Some(Task {
-                    typ: TYPE_ARRAY[rng.gen_range(0..TYPE_ARRAY.len())],
-                    seed: rng.gen(),
-                    height: self.height - 1,
-                    max_children: self.max_children,
-                    current_sibling_idx: 0,
-                    max_siblings: num_tasks,
-                    rng,
-                })
-            } else { None }
-        };
-
-        return if self.current_sibling_idx + 1 >= self.max_siblings {
-            (task, None)
-        } else {
-            let mut rng = self.rng.clone();
-            (task, Some(Task {
-                typ: TYPE_ARRAY[rng.gen_range(0..TYPE_ARRAY.len())],
-                seed: rng.gen(),
-                height: self.height,
-                max_children: self.max_children,
-                current_sibling_idx: self.current_sibling_idx + 1,
-                max_siblings: self.max_siblings,
-                rng,
-            }))
-        };
-    }
-
-    pub fn generate_initial(seed: u64, starting_height: usize, max_children: usize) -> Task {
+    pub fn generate_initial(seed: u64, starting_height: usize, max_children: usize) -> Vec<Task> {
         generate_set(seed, starting_height, max_children, 64)
     }
 }
 
 fn do_hash(task: &Task) -> u64 {
-    let mut rng = ChaCha20Rng::seed_from_u64(task.seed);
+    let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(task.seed);
     let rounds: usize = rng.gen_range(0x10000..0x20000);
     let mut state: [u8; 32] = [0; 32];
     rng.fill_bytes(&mut state);
@@ -108,7 +76,7 @@ fn do_hash(task: &Task) -> u64 {
 }
 
 fn do_derive(task: &Task) -> u64 {
-    let mut rng = ChaCha20Rng::seed_from_u64(task.seed);
+    let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(task.seed);
     let mut state: [u8; 64] = [0; 64];
     let mut out: [u8; 64] = [0; 64];
     rng.fill_bytes(&mut state);
@@ -125,7 +93,7 @@ fn do_derive(task: &Task) -> u64 {
 }
 
 fn do_random(task: &Task) -> u64 {
-    let mut rng = ChaCha20Rng::seed_from_u64(task.seed);
+    let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(task.seed);
     let rounds: usize = rng.gen_range(0x10000..0x20000);
     for _ in 0..rounds {
         rng.gen::<u64>();
