@@ -2,11 +2,29 @@ use std::{
     collections::{HashMap, VecDeque},
     time::Instant,
     sync::mpsc::channel,
+    sync::mpsc::Sender,
+    sync::mpsc::Receiver,
 };
 
 use task::{Task, TaskType};
 use threadpool::ThreadPool;
 use num_cpus;
+
+fn execute_task(send: &Sender<(u64, Vec<Task>)>, count_map: &mut HashMap<TaskType, usize>, spawned: &mut u64, pool: &ThreadPool, next: Task) {
+    let send = send.clone();
+    *count_map.entry(next.typ).or_insert(0usize) += 1;
+    *spawned += 1;
+    pool.execute(move || {
+        send.send(next.execute()).unwrap();
+    });
+}
+
+fn wait_task(recv: &Receiver<(u64, Vec<Task>)>, spawned: &mut u64, output: &mut u64) -> std::vec::IntoIter<Task> {
+    let result = recv.recv().unwrap();
+    *spawned -= 1;
+    *output ^= result.0;
+    result.1.into_iter()
+}
 
 fn main() {
     let (seed, starting_height, max_children) = get_args();
@@ -28,23 +46,18 @@ fn main() {
     let mut spawned: u64 = 0;
 
     let start = Instant::now();
-    while taskq.len() > 0 {
-        while let Some(next) = taskq.pop_front() {
-            let send = send.clone();
-            *count_map.entry(next.typ).or_insert(0usize) += 1;
-            spawned += 1;
-            pool.execute(move || {
-                send.send(next.execute()).unwrap();
-            });
-        }
 
-        while spawned > 0 {
-            let result = recv.recv().unwrap();
-            spawned -= 1;
-            output ^= result.0;
-            taskq.extend(result.1.into_iter());
+    while let Some(next) = taskq.pop_front() {
+        execute_task(&send, &mut count_map, &mut spawned, &pool, next);
+    }
+
+    while spawned > 0 {
+        let new_tasks = wait_task(&recv, &mut spawned, &mut output);
+        for next in new_tasks {
+            execute_task(&send, &mut count_map, &mut spawned, &pool, next);
         }
     }
+
     let end = Instant::now();
 
     eprintln!("Completed in {} s", (end - start).as_secs_f64());
