@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     time::Instant,
     sync::mpsc::channel,
 };
@@ -19,9 +19,7 @@ fn main() {
     );
 
     let mut count_map = HashMap::new();
-    let mut taskq = VecDeque::new();
     let init_task = Task::generate_initial(seed, starting_height, max_children);
-    taskq.push_back(init_task);
 
     let mut task_counter: u128 = 1;
 
@@ -32,21 +30,19 @@ fn main() {
 
     let start = Instant::now();
 
-    while let Some(next) = taskq.pop_front() {
-        let typ = next.typ;
-        *count_map.entry(typ).or_insert(0usize) += 1;
-        let send_ch = send_ch.clone();
-        th_pool.execute(move || {
-            send_ch.send(next.execute())
-                .expect("Please receive this task");
-        })
-    }
+    let typ = init_task.typ;
+    *count_map.entry(typ).or_insert(0usize) += 1;
+    let s = send_ch.clone();
+    th_pool.execute(move || {
+        s.send(init_task.execute())
+            .expect("Please receive this task");
+    });
+
     while task_counter > 0 {
         /*
          In every step do the following:
-         1. get the next task if any
-         2. If there is, send is to task pool
-         3. Attempt to recv any result
+         1. Wait for result from task pool
+         2. If there is more task, send it back to the pool
 
          Repeat this until all the tasks are finished
          */
