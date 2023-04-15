@@ -1,32 +1,12 @@
 use std::{
     collections::{HashMap, VecDeque},
     time::Instant,
-    sync::mpsc::channel,
-    sync::mpsc::Sender,
-    sync::mpsc::Receiver,
 };
 
 use task::{Task, TaskType};
-use threadpool::ThreadPool;
-use num_cpus;
 
-fn execute_task(send: &Sender<(u64, Vec<Task>)>, count_map: &mut HashMap<TaskType, usize>, spawned: &mut u64, pool: &ThreadPool, next: Task) {
-    let send = send.clone();
-    *count_map.entry(next.typ).or_insert(0usize) += 1;
-    *spawned += 1;
-    pool.execute(move || {
-        send.send(next.execute()).unwrap();
-    });
-}
-
-fn wait_task(recv: &Receiver<(u64, Vec<Task>)>, spawned: &mut u64, output: &mut u64) -> std::vec::IntoIter<Task> {
-    let result = recv.recv().unwrap();
-    *spawned -= 1;
-    *output ^= result.0;
-    result.1.into_iter()
-}
-
-fn main() {
+#[tokio::main]
+async fn main() {
     let (seed, starting_height, max_children) = get_args();
 
     eprintln!(
@@ -34,30 +14,25 @@ fn main() {
         seed, starting_height, max_children
     );
 
-    let n_cpus = num_cpus::get();
-    let pool = ThreadPool::new(n_cpus);
-
-    let (send, recv) = channel();
-
     let mut count_map = HashMap::new();
     let mut taskq = VecDeque::from(Task::generate_initial(seed, starting_height, max_children));
+    let mut handles = VecDeque::new();
 
     let mut output: u64 = 0;
-    let mut spawned: u64 = 0;
 
     let start = Instant::now();
+    while taskq.len() > 0 {
+        while let Some(next) = taskq.pop_front() {
+            *count_map.entry(next.typ).or_insert(0usize) += 1;
+            handles.push_back(tokio::spawn(async move {next.execute()}));
+        }
 
-    while let Some(next) = taskq.pop_front() {
-        execute_task(&send, &mut count_map, &mut spawned, &pool, next);
-    }
-
-    while spawned > 0 {
-        let new_tasks = wait_task(&recv, &mut spawned, &mut output);
-        for next in new_tasks {
-            execute_task(&send, &mut count_map, &mut spawned, &pool, next);
+        while let Some(handle) = handles.pop_front() {
+            let result = handle.await.unwrap();
+            output ^= result.0;
+            taskq.extend(result.1.into_iter());
         }
     }
-
     let end = Instant::now();
 
     eprintln!("Completed in {} s", (end - start).as_secs_f64());
