@@ -48,7 +48,7 @@ fn main() {
          */
 
         let (result, child_task, sibling_task) = recv_ch.recv().unwrap();
-        match sibling_task {
+        match child_task {
             Some(new_task) => {
                 task_counter += 1;
                 let typ = new_task.typ;
@@ -61,8 +61,8 @@ fn main() {
             },
             None => {}
         }
-        
-        match child_task {
+
+        match sibling_task {
             Some(new_task) => {
                 task_counter += 1;
                 let typ = new_task.typ;
